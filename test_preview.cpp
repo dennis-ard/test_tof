@@ -18,80 +18,6 @@ cv::Scalar orange(42, 147, 252);
 const uint8_t frame_row = 180;
 const uint8_t frame_col = 240;
 
-void execut_statement(sqlite3 *sql, const char *sql_stmt)
-{
-    sqlite3_stmt *stmt = NULL;
-    int result = sqlite3_prepare_v2(sql, sql_stmt, -1, &stmt, NULL);
-
-    if (result == SQLITE_OK)
-    {
-        // std::clog<< "statement ok"<<std::endl;
-        //执行该语句
-        sqlite3_step(stmt);
-    }
-    else
-    {
-        std::clog << "Problem executing statement";
-    }
-    //清理语句句柄，准备执行下一个语句
-    sqlite3_finalize(stmt);
-}
-
-void open_sqlite(sqlite3 **sql)
-{
-    char path[80];
-
-    std::time_t t = std::time(0);
-    tm *nowtime = localtime(&t);
-    sprintf(path, "test_tof_%d_%d.db", 1900 + nowtime->tm_year, nowtime->tm_mon + 1);
-
-    int result = sqlite3_open_v2(path, sql, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_SHAREDCACHE, NULL);
-    if (result == SQLITE_OK)
-    {
-        // std::clog << "open db success" << std::endl;
-    }
-    else
-    {
-        std::clog << "open db failure" << std::endl;
-    }
-}
-
-void close_sqlite(sqlite3 *sql)
-{
-    if (sql)
-    {
-        sqlite3_close_v2(_sql);
-        sql = nullptr;
-    }
-}
-
-void create_table(sqlite3 *sql)
-{
-    const char *sqlCreateTable = "create table if not exists test_tof (tof_id integer PRIMARY KEY AUTOINCREMENT,point_position integer not NULL,eligibility INTEGER not null,test_time INTEGER NOT NULL,min_value integer not null,max_value integer not null,avg_value integer not null);";
-    execut_statement(sql, sqlCreateTable);
-}
-
-void insert_record(sqlite3 *sql, float record[5][3], float cfg_param[6])
-{
-    char buf[300];
-    std::time_t t = std::time(0);
-    for (uint8_t j = 0; j < 5; j++)
-    {
-        record[j][2] /= 100;
-        sprintf(buf, "INSERT INTO test_tof(point_position,eligibility,test_time, min_value,max_value,avg_value) VALUES(%d,%d,%ld, %f,%f,%f);", j, std::abs(record[j][2] - cfg_param[j]) > cfg_param[5] ? 0 : 1, t, record[j][0], record[j][1], record[j][2]);
-        execut_statement(sql, buf);
-        std::cout << "位置:" << (int)j << "偏差值:" << std::abs(record[j][2] - cfg_param[j]) << ", 最小值 : " << record[j][0] << ", 最大值: " << record[j][1] << ", 平均值: " << record[j][2] << std::endl;
-    }
-}
-
-void sqlite_record(sqlite3 **sql, float record[5][3], float cfg_param[6])
-{
-    open_sqlite(sql);
-    create_table(*sql);
-    insert_record(*sql, record, cfg_param);
-    close_sqlite(*sql);
-}
-
 std::string convertFloat2String(const float value, const int precision = 2)
 {
     std::stringstream stream{};
@@ -219,7 +145,8 @@ int main()
         std::cerr << "Failed to start camera" << std::endl;
         exit(-1);
     }
-    
+    //  Modify the range also to modify the MAX_DISTANCE
+
     float *depth_ptr;
     float *amplitude_ptr;
     uint8_t *preview_ptr = new uint8_t[43200];
@@ -229,7 +156,6 @@ int main()
     cv::Point pointArray[5] = {cv::Point(2, 25), cv::Point(210, 25), cv::Point(118, 78), cv::Point(2, 158), cv::Point(210, 158)};
     for (uint8_t freq = 0; freq < 2; freq++)
     {
-        bool insert_flag = true;
         float *cfg_param = nullptr;
         int max_distance = 0;
         if(freq == 0)
@@ -242,8 +168,8 @@ int main()
             max_distance = 4;
             cfg_param = cfg_param_4_mod;
             tof.setControl(ArduCam::RANGE, max_distance);
-        }        float record[5][3] = {{4.0, 0, 0}, {4.0, 0, 0}, {4.0, 0, 0}, {4.0, 0, 0}, {4.0, 0, 0}};
-        for (uint8_t i = 0; i < 101; i++)
+        }
+        for (;;)
         {
             do
             {
@@ -262,58 +188,22 @@ int main()
             cv::applyColorMap(result_frame, result_frame, cv::COLORMAP_JET);
             amplitude_frame.convertTo(amplitude_frame, CV_8U, 255.0 / 1024);
             cv::imshow("amplitude", amplitude_frame);
-            if (i < 100)
+
+            for (uint8_t j = 0; j < 5; j++)
             {
-                for (uint8_t j = 0; j < 5; j++)
-                {
-                    float tmp = cv::mean(depth_frame(rectArray[j])).val[0];
-                    drawResult(result_frame, tmp, cfg_param[j], rectArray[j], pointArray[j],cfg_param[5]);
-                    if (record[j][0] > tmp)
-                        record[j][0] = tmp;
-                    else if (record[j][1] < tmp)
-                        record[j][1] = tmp;
-                    record[j][2] += tmp;
-                }
-
-                cv::resize(result_frame, result_frame, cv::Size(960, 720));
-
-                cv::imshow("preview", result_frame);
-
-                if (cv::waitKey(1) == 27)
-                    break;
-
-                display_fps();
+                float tmp = cv::mean(depth_frame(rectArray[j])).val[0];
+                drawResult(result_frame, tmp, cfg_param[j], rectArray[j], pointArray[j],cfg_param[5]);
             }
-            else
-            {
-                i--;
-                if(insert_flag == true){
-                    insert_flag = false;
-                    sqlite_record(&_sql,record,cfg_param);
-                }
-                int record_cnt = 0;
-                for (uint8_t j = 0; j < 5; j++)
-                {
-                    drawResult(result_frame, record[j][2], cfg_param[j], rectArray[j], pointArray[j],cfg_param[5]);
-                    if (std::abs(record[j][2] - cfg_param[j]) > cfg_param[5])
-                        record_cnt++;
-                }
-                cv::resize(result_frame, result_frame, cv::Size(960, 720));
 
-                if (record_cnt >= 2)
-                {
-                    cv::putText(result_frame, "no pass", cv::Point(100, 100), cv::FONT_HERSHEY_COMPLEX, 5, orange, 3);
-                }
-                else
-                {
-                    cv::putText(result_frame, "pass", cv::Point(100, 100), cv::FONT_HERSHEY_COMPLEX, 5, green, 3);
-                }
-                cv::imshow("preview", result_frame);
-                if (cv::waitKey(1) == 'q')
-                {
-                    break;
-                }
-            }
+            cv::resize(result_frame, result_frame, cv::Size(960, 720));
+
+            cv::imshow("preview", result_frame);
+
+            if (cv::waitKey(1) == 'q')
+                break;
+
+            display_fps();
+            
         }
     }
 
